@@ -17,6 +17,16 @@
 # is required — only outbound HTTPS. That is what makes this work on-prem and
 # behind NAT.
 #
+# No DNS API credential? tls.dns_provider: manual. Issuance then takes two runs
+# of the same command with a person in between: run 1 prints the _acme-challenge
+# TXT records and stops; you add them in the DNS console; run 2 waits until they
+# are visible, completes the order and installs the certificate. Renewals are not
+# automatic in this mode (see "Manual DNS" below).
+#
+# Install target: the sandbox writes files for nginx. With tls.k8s_secret set to
+# <namespace>/<name>, every issue and renewal applies a kubernetes.io/tls Secret
+# instead (APISIX on oan_dev, see automation/oan-dev/).
+#
 # ACME client: acme.sh. Chosen over certbot because it ships every DNS provider
 # we support behind one uniform interface (`--dns dns_<x>` + env vars), is a
 # single POSIX shell script with no Python/venv dependency, and persists both
@@ -69,6 +79,7 @@ acme_dns_hook() {
         cloudflare) echo "dns_cf"      ;;
         route53)    echo "dns_aws"     ;;
         acmedns)    echo "dns_acmedns" ;;
+        manual)     echo "manual"      ;;
         *)          echo "" ;;
     esac
 }
@@ -111,9 +122,12 @@ acme_export_provider_creds() {
             export ACMEDNS_PASSWORD="$(cfg 'tls.acmedns_password' '')"
             export ACMEDNS_SUBDOMAIN="$(cfg 'tls.acmedns_subdomain' '')"
             ;;
+        manual)
+            # No credentials: the person adds the TXT records.
+            ;;
         *)
             log_error "Unknown tls.dns_provider: '${provider}'" \
-                      "Valid values: desec, cloudflare, route53, acmedns" \
+                      "Valid values: desec, cloudflare, route53, acmedns, manual" \
                       "Fix tls.dns_provider in your config file"
             return 1
             ;;
@@ -205,19 +219,34 @@ acme_preflight() {
                           "Register with your acme-dns server and fill in the tls.acmedns_* fields"
                 ((errors++)); }
             ;;
+        manual)
+            log_info "  manual: no DNS API. Issuance stops once so you can add the TXT records; re-run to finish."
+            log_warn "  manual: renewals are NOT automatic. Re-run after about 60 days (certificates last 90)."
+            ;;
         *)
             log_error "Unknown tls.dns_provider: '${provider}'" \
-                      "Valid values: desec, cloudflare, route53, acmedns" \
+                      "Valid values: desec, cloudflare, route53, acmedns, manual" \
                       "Fix tls.dns_provider in your config file"
             ((errors++))
             ;;
     esac
+
+    # ── Kubernetes Secret target (optional) ──────────────────────────────
+    local k8s_secret=$(cfg 'tls.k8s_secret' '')
+    if [[ -n "$k8s_secret" && ! "$k8s_secret" =~ ^[a-z0-9.-]+/[a-z0-9.-]+$ ]]; then
+        log_error "'tls.k8s_secret' must be <namespace>/<name>: ${k8s_secret}" \
+                  "The certificate is applied as a kubernetes.io/tls Secret with that name" \
+                  "Set tls.k8s_secret to e.g. api6-gateway/oan-development-wildcard-tls, or remove it for nginx files"
+        ((errors++))
+    fi
 
     [[ $errors -gt 0 ]] && return 1
 
     # ── Live credential check (deSEC only — it is the quick-start path) ──
     if [[ "$provider" == "desec" ]]; then
         acme_preflight_desec "$domain" || return 1
+    elif [[ "$provider" == "manual" ]]; then
+        :   # nothing to verify: there is no credential
     else
         log_warn "Credentials for '${provider}' are not verified live — a wrong token will surface during issuance."
     fi
@@ -573,7 +602,7 @@ acme_issue_cert() {
     # Set tls.dns_propagation_seconds: 0 to restore acme.sh's adaptive check.
     local dns_sleep
     dns_sleep=$(cfg 'tls.dns_propagation_seconds' '300')
-    if [[ "$dns_sleep" != "0" ]]; then
+    if [[ "$dns_sleep" != "0" && "$hook" != "manual" ]]; then
         extra_args+=(--dnssleep "$dns_sleep")
         log_info "  Allowing ${dns_sleep}s for DNS propagation before validation."
     fi
@@ -585,13 +614,19 @@ acme_issue_cert() {
     # acme.sh's progress lands in the log without piping here (which would
     # otherwise mask its exit status behind tee's).
     local rc=0
-    "$ACME_BIN" --issue \
-        --dns "$hook" \
-        "${domain_args[@]}" \
-        --server letsencrypt \
-        --keylength ec-256 \
-        --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" \
-        "${extra_args[@]}" || rc=$?
+    if [[ "$hook" == "manual" ]]; then
+        acme_issue_manual "$primary" "${domain_args[@]}" "${extra_args[@]}" || rc=$?
+        # 3 == the TXT records are not in DNS yet; the person has been told what to add.
+        [[ $rc -eq 3 ]] && return 3
+    else
+        "$ACME_BIN" --issue \
+            --dns "$hook" \
+            "${domain_args[@]}" \
+            --server letsencrypt \
+            --keylength ec-256 \
+            --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" \
+            "${extra_args[@]}" || rc=$?
+    fi
 
     # rc 2 == "skipped, cert still valid" — treat as success.
     if [[ $rc -ne 0 && $rc -ne 2 ]]; then
@@ -604,15 +639,17 @@ acme_issue_cert() {
 
     # Install into the stable path the Nginx config reads, and register the
     # reload command. acme.sh persists the reloadcmd, so every future renewal
-    # re-installs here and reloads Nginx automatically.
+    # re-installs here and reloads Nginx (or re-applies the Secret) automatically.
+    local reload_cmd
+    reload_cmd=$(acme_reload_cmd "$dest") || return 1
     mkdir -p "$dest"
     "$ACME_BIN" --install-cert -d "$primary" --ecc \
         --key-file       "${dest}/privkey.pem" \
         --fullchain-file "${dest}/fullchain.pem" \
-        --reloadcmd      "systemctl reload nginx 2>/dev/null || true" \
+        --reloadcmd      "$reload_cmd" \
         --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" > /dev/null 2>&1 || {
         log_error "Failed to install the issued certificate to ${dest}" \
-                  "acme.sh --install-cert returned an error" \
+                  "acme.sh --install-cert returned an error, or its reload command failed (with tls.k8s_secret: kubectl could not apply the Secret, e.g. the namespace does not exist)" \
                   "Check ${ACME_HOME}/certs/${primary}_ecc/ for the issued files"
         return 1
     }
@@ -620,4 +657,174 @@ acme_issue_cert() {
     chmod 600 "${dest}/privkey.pem" 2>/dev/null || true
     log_success "Certificate installed: ${dest}/fullchain.pem"
     return 0
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reload command: nginx for the sandbox, a TLS Secret when tls.k8s_secret is set
+# ─────────────────────────────────────────────────────────────────────────────
+# Usage: acme_reload_cmd <dest>   (prints the command acme.sh runs after every
+# issue and renewal; <dest> holds the fullchain.pem and privkey.pem it just wrote)
+acme_reload_cmd() {
+    local dest="$1"
+    local secret=$(cfg 'tls.k8s_secret' '')
+
+    if [[ -z "$secret" ]]; then
+        echo "systemctl reload nginx 2>/dev/null || true"
+        return 0
+    fi
+
+    local ns="${secret%%/*}" name="${secret#*/}"
+    local kubeconfig=$(cfg 'tls.kubeconfig' '/etc/rancher/k3s/k3s.yaml')
+
+    # cron runs with a short PATH, so resolve kubectl now.
+    local kubectl_bin
+    kubectl_bin=$(command -v kubectl) || {
+        log_error "kubectl not found (tls.k8s_secret: ${secret})" \
+                  "The certificate is applied as a Secret with kubectl, which must be on this machine" \
+                  "Run this on a node with kubectl, or remove tls.k8s_secret to write nginx files"
+        return 1
+    }
+
+    echo "KUBECONFIG='${kubeconfig}' '${kubectl_bin}' -n '${ns}' create secret tls '${name}' --cert='${dest}/fullchain.pem' --key='${dest}/privkey.pem' --dry-run=client -o yaml | KUBECONFIG='${kubeconfig}' '${kubectl_bin}' apply -f -"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manual DNS (tls.dns_provider: manual) — a zone no API credential reaches
+# ─────────────────────────────────────────────────────────────────────────────
+# Two runs of the same command, with a person in between:
+#
+#   run 1  asks Let's Encrypt for the order and prints the _acme-challenge TXT
+#          records. The step stops (acme_issue_cert returns 3).
+#   you    add the records in the DNS console.
+#   run 2  waits until the records are visible on public resolvers (a failed
+#          validation counts against Let's Encrypt's rate limits), completes the
+#          order with `acme.sh --renew` and installs the certificate.
+#
+# Renewals are NOT automatic: acme.sh's cron cannot add the records. Run the same
+# command again after about 60 days; the certificate lasts 90.
+#
+# Between the runs the file ${ACME_CONFIG_HOME}/manual-pending-<name> records the
+# names of the open order. Run with --force (FORCE_MODE) to discard it and start a
+# new order, e.g. when switching from staging to production: the TXT values change.
+# To move to an API provider, set tls.dns_provider and run with --force.
+
+acme_manual_marker() { echo "${ACME_CONFIG_HOME}/manual-pending-${1}"; }
+
+# "<count> <challenge name>" per distinct challenge name. The apex and its wildcard
+# share one name, so that name needs TWO TXT values.
+acme_manual_challenges() {
+    local name
+    for name in "$@"; do
+        echo "_acme-challenge.${name#\*.}"
+    done | sort | uniq -c | sed 's/^ *//'
+}
+
+# Wait until every challenge name shows all its TXT values on three public
+# resolvers. Returns 1 on timeout (tls.dns_propagation_seconds, default 300).
+acme_manual_wait_txt() {
+    local timeout
+    timeout=$(cfg 'tls.dns_propagation_seconds' '300')
+    [[ "$timeout" == "0" ]] && return 0
+
+    if ! command -v dig >/dev/null 2>&1; then
+        log_warn "dig not available — not checking that the TXT records are visible."
+        return 0
+    fi
+
+    log_info "Waiting for the TXT records to be visible in public DNS (up to ${timeout}s)..."
+    local elapsed=0 interval=15 all_ok count name r n
+    while :; do
+        all_ok=true
+        while read -r count name; do
+            for r in 1.1.1.1 8.8.8.8 9.9.9.9; do
+                # grep -c prints 0 and exits 1 when nothing matches.
+                n=$(dig "@${r}" +short +time=5 +tries=1 TXT "$name" 2>/dev/null | grep -c .) || true
+                if [[ "${n:-0}" -lt "$count" ]]; then
+                    all_ok=false
+                    break
+                fi
+            done
+            $all_ok || break
+        done < <(acme_manual_challenges "$@")
+
+        if $all_ok; then
+            log_success "The TXT records are visible."
+            return 0
+        fi
+        [[ $elapsed -ge $timeout ]] && break
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+    return 1
+}
+
+# Usage: acme_issue_manual <primary_fqdn> <acme.sh args: -d <name>... [--staging] [--force]>
+# Returns 0 issued (or still valid), 2 still valid, 3 waiting for the TXT records, 1 error.
+acme_issue_manual() {
+    local primary="$1"; shift
+    local -a acme_args=("$@")
+    local marker
+    marker=$(acme_manual_marker "$primary")
+    local manual_flag="--yes-I-know-dns-manual-mode-enough-go-ahead-please"
+
+    local -a names=()
+    local arg prev=""
+    for arg in "${acme_args[@]}"; do
+        [[ "$prev" == "-d" ]] && names+=("$arg")
+        prev="$arg"
+    done
+
+    if [[ "${FORCE_MODE:-false}" == "true" && -f "$marker" ]]; then
+        log_info "--force: discarding the open order for ${primary} and starting a new one."
+        rm -f "$marker"
+    fi
+
+    local rc=0
+
+    # ── Run 2: the records should be in DNS now ──────────────────────────
+    if [[ -f "$marker" ]]; then
+        log_info "Open manual DNS order for ${primary} — completing it."
+        if ! acme_manual_wait_txt "${names[@]}"; then
+            log_manual_action "The TXT records for ${primary} are not visible in public DNS yet." \
+                              "Expected: $(acme_manual_challenges "${names[@]}" | awk '{printf "%s (%s value%s)  ", $2, $1, ($1 > 1 ? "s" : "")}')" \
+                              "Check the name and every value, give DNS a few minutes. To start over with new values run with --force."
+            return 3
+        fi
+
+        "$ACME_BIN" --renew -d "$primary" --ecc "$manual_flag" \
+            --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" || rc=$?
+        if [[ $rc -ne 0 ]]; then
+            # Keep the marker: the records may only need more time.
+            log_error "Let's Encrypt did not validate the TXT records for ${primary}" \
+                      "A value is missing or wrong, or a resolver still serves an old answer. The values change with every new order, so records from an earlier order (e.g. staging) do not match" \
+                      "Compare the values in DNS with the ones printed by the first run; to start over run with --force and add the new values" \
+                      "dig +short TXT _acme-challenge.${primary#\*.} @8.8.8.8"
+            return 1
+        fi
+        rm -f "$marker"
+        return 0
+    fi
+
+    # ── Run 1: open the order and print the records ──────────────────────
+    local out
+    out=$(mktemp)
+    "$ACME_BIN" --issue --dns "$manual_flag" \
+        "${acme_args[@]}" \
+        --server letsencrypt \
+        --keylength ec-256 \
+        --home "$ACME_HOME" --config-home "$ACME_CONFIG_HOME" > "$out" 2>&1 || rc=$?
+    cat "$out"
+
+    # acme.sh lists the records to add and exits non-zero; that is the normal outcome here.
+    if grep -Eq 'TXT value|_acme-challenge' "$out"; then
+        rm -f "$out"
+        printf '%s\n' "${names[@]}" > "$marker"
+        log_manual_action "Add the DNS TXT records printed above for ${primary}." \
+                          "Names: $(acme_manual_challenges "${names[@]}" | awk '{printf "%s (%s value%s)  ", $2, $1, ($1 > 1 ? "s" : "")}')" \
+                          "Several values on one name go into ONE TXT record set (Route 53 requires it)."
+        return 3
+    fi
+
+    rm -f "$out"
+    return "$rc"
 }

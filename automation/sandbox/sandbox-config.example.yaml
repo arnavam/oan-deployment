@@ -69,6 +69,9 @@ tls:
   #   cloudflare — you own the domain, DNS hosted on Cloudflare
   #   route53    — you own the domain, DNS hosted on AWS Route 53
   #   acmedns    — self-hosted acme-dns via CNAME delegation (advanced)
+  #   manual     — no DNS API: the first run prints the TXT records and stops, you
+  #                add them in the DNS console, the second run finishes. Renewals
+  #                are NOT automatic (re-run after ~60 days). No credentials needed.
   dns_provider: "desec"
 
   # ── Credentials ─────────────────────────────────────────────────────────
@@ -118,6 +121,13 @@ tls:
   # limits. Use it while testing repeated installs, then set false and re-run
   # with --force to obtain real certificates.
   staging: false
+
+  # Install target. By default the certificate is written for nginx
+  # (/etc/openg2p/certs). Set k8s_secret to apply it, on every issue and
+  # renewal, as a kubernetes.io/tls Secret <namespace>/<name> instead (APISIX on
+  # oan_dev). The namespace must exist; kubectl must be on this machine.
+  # k8s_secret: "api6-gateway/oan-development-wildcard-tls"
+  # kubeconfig: "/etc/rancher/k3s/k3s.yaml"
 
 # ---------------------------------------------------------------------------
 # Public access (security-sensitive)

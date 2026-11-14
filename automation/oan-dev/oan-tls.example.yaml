@@ -1,0 +1,30 @@
+# Config for oan-tls.sh. Copy to oan-tls.yaml and edit; see README.md in this directory.
+# Same keys as automation/sandbox/sandbox-config.example.yaml (only the ones this script reads).
+
+# The certificate covers this name and *.<domain>. DNS-01 needs no inbound port, so it can be
+# issued before Route 53 points at this node.
+domain: "development.oanstaging.com"
+
+tls:
+  # Contact address registered with Let's Encrypt. Required by the library.
+  email: ""
+
+  # manual: no DNS API on the node. Run 1 prints the TXT records and stops; add them in Route 53;
+  #         run 2 finishes. Renewals are manual, about every 60 days.
+  # route53: automatic. Needs an instance role (leave the keys unset) or tls.aws_access_key_id /
+  #         tls.aws_secret_access_key. Switch to it with --force.
+  dns_provider: "manual"
+
+  # true: Let's Encrypt staging, certificates are NOT trusted. Proves the whole path first.
+  # false: the real certificate (run with --force after staging, the TXT values change).
+  staging: true
+
+  # The Secret APISIX serves (ApisixTls). The namespace must exist.
+  k8s_secret: "api6-gateway/oan-development-wildcard-tls"
+  kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+
+  # How long to wait for the TXT records to be visible before giving up (seconds).
+  dns_propagation_seconds: 300
+
+  # This script never publishes A records; the node's names are changed by hand.
+  publish_a_records: false
