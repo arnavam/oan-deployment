@@ -44,22 +44,36 @@ public_access: true
 # APISIX holds 80/443 (no host nginx, no Istio) and serves Rancher; see
 # automation/sandbox/sandbox-config.example.yaml.
 edge: "apisix"
+
+# Every OAN chart and its values come from oan-helm: the charts from its published repository, the values
+# and APISIX's etcd from environments/qa at this commit (oan-helm docs/qa-cluster.md). Move it to pick up a
+# change merged there.
+oan_helm:
+  ref: "9195f519c06dc93bb182b1c0a7ed697543279aa5"
+  environment: "qa"
+
 apisix:
-  chart_version: "0.0.1-develop.1"
-  values_file: "values/apisix.yaml"
+  chart_version: "0.0.1-develop.2"
+
+# Chart versions of the releases automation/oan-platform.sh installs.
+oan_platform:
+  namespace_guard: "0.0.1-develop.1"
+  frappe_common: "0.0.1-develop.1"
+  cluster_access: "0.0.1-develop.1"
+  logging: "0.0.1-develop.1"
 
 ssh_host: ""                # [AWS] filled from provision-output.yaml
 ssh_user: "ubuntu"
 ssh_key:  ""
 
-# No OpenG2P environment (Commons). The OAN namespaces, shared PostgreSQL and the
-# Jenkins deployer come from automation/oan-platform.sh; the services from Jenkins.
+# No OpenG2P environment (Commons). The OAN namespaces, shared PostgreSQL, Jenkins
+# deployer and log agent come from automation/oan-platform.sh; the services from Jenkins.
 install_environment: false
 
 rancher:
   version: "2.15.1"
   replicas: "1"
 
-# No Grafana, Loki or OpenTelemetry from the platform: oan-logging (environments/qa/platform.yaml) ships the
+# No Grafana, Loki or OpenTelemetry from the platform: oan-logging (automation/oan-platform.sh) ships the
 # logs to the central Loki and Grafana. Prometheus and Alertmanager stay, for the alert channels below.
 logging: "external"

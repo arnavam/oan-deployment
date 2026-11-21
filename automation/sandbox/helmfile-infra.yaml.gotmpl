@@ -98,41 +98,14 @@ releases:
   # ─────────────────────────────────────────────────────────────────────────
   # APISIX: the edge on 80/443 (hostPort), with its Ingress Controller
   # ─────────────────────────────────────────────────────────────────────────
-  - name: apisix-etcd
-    namespace: api6-gateway
-    chart: ./charts/apisix-etcd
-
-  # Release name `apisix`: the chart's Services and the route charts depend on it.
+  # Release name `apisix`: the chart's Services and the route charts depend on it. Its etcd is applied
+  # before this sync (phase 2); the values, including the wildcard ApisixTls (edge), come from oan-helm.
   - name: apisix
     namespace: api6-gateway
     chart: oan-helm/oan-apisix-gateway
     version: {{ .Values.apisix.chartVersion | quote }}
-    needs:
-      - api6-gateway/apisix-etcd
     values:
-      - {{ .Values.apisix.valuesFile | quote }}
-
-  # The wildcard from phase 1 (tls.k8s_secret) for <domain> and *.<domain>.
-  - name: apisix-tls
-    namespace: api6-gateway
-    chart: ./charts/raw
-    needs:
-      - api6-gateway/apisix
-    values:
-      - resources:
-          - apiVersion: apisix.apache.org/v2
-            kind: ApisixTls
-            metadata:
-              name: wildcard
-              namespace: api6-gateway
-            spec:
-              ingressClassName: apisix
-              hosts:
-                - {{ .Values.apisix.domain | quote }}
-                - {{ printf "*.%s" .Values.apisix.domain | quote }}
-              secret:
-                name: {{ .Values.apisix.tlsSecretName | quote }}
-                namespace: api6-gateway
+      - {{ .Values.apisix.valuesUrl | quote }}
 {{- else }}
 
   - name: rancher-ingress

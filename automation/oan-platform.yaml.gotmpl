@@ -1,0 +1,51 @@
+# The cluster-level OAN releases, applied by oan-platform.sh after the platform install. Charts come from
+# oan-helm's published repository; values from oan-helm's environments/<environment>/values at oanHelm.ref,
+# read through go-getter. The services themselves are deployed by Jenkins from their repositories.
+
+repositories:
+  - name: oan-helm
+    url: https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan-helm/main/repository/
+
+helmDefaults:
+  wait: true
+  timeout: 900
+  atomic: true
+
+{{- $values := printf "git::https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git@environments/%s/values" .StateValues.oanHelm.environment }}
+{{- $ref := printf "?ref=%s" .StateValues.oanHelm.ref }}
+
+releases:
+  # Namespaces with Pod Security labels and default-deny NetworkPolicies; installed first.
+  - name: oan-namespace-guard
+    namespace: kube-system
+    chart: oan-helm/oan-namespace-guard
+    version: {{ .StateValues.versions.namespaceGuard | quote }}
+    values:
+      - {{ printf "%s/oan-namespace-guard.yaml%s" $values $ref | quote }}
+
+  # PostgreSQL shared by the Frappe services.
+  - name: oan-frappe-common-db
+    namespace: frappe-common
+    chart: oan-helm/oan-frappe-common
+    version: {{ .StateValues.versions.frappeCommon | quote }}
+    needs: [kube-system/oan-namespace-guard]
+    values:
+      - {{ printf "%s/oan-frappe-common.yaml%s" $values $ref | quote }}
+
+  # The ServiceAccount Jenkins deploys with: admin in each service namespace, read on the database Secret.
+  - name: oan-cluster-access
+    namespace: a2c
+    chart: oan-helm/oan-cluster-access
+    version: {{ .StateValues.versions.clusterAccess | quote }}
+    needs: [kube-system/oan-namespace-guard, frappe-common/oan-frappe-common-db]
+    values:
+      - {{ printf "%s/oan-cluster-access.yaml%s" $values $ref | quote }}
+
+  # Node log agent, shipping to the central OTel gateway, Loki and Grafana.
+  - name: oan-logging
+    namespace: observability
+    chart: oan-helm/oan-logging
+    version: {{ .StateValues.versions.logging | quote }}
+    needs: [kube-system/oan-namespace-guard]
+    values:
+      - {{ printf "%s/oan-logging.yaml%s" $values $ref | quote }}

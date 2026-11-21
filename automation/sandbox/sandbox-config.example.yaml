@@ -177,10 +177,14 @@ edge: "nginx"
 #                        Alertmanager stay.
 logging: "local"
 
-# Only with edge: apisix.
+# Only with edge: apisix. The chart comes from oan-helm's published repository; its
+# values (environments/<environment>/values/oan-apisix-gateway.yaml) and its etcd
+# (environments/<environment>/manifests/apisix-etcd.yaml) from oan-helm at `ref`.
+# oan_helm:
+#   ref: "<commit>"                      # a full commit SHA, so a re-run installs the same
+#   environment: "qa"
 # apisix:
-#   chart_version: "0.0.1-develop.1"     # oan-helm/oan-apisix-gateway
-#   values_file: "values/apisix.yaml"    # relative to this config file's directory
+#   chart_version: "0.0.1-develop.2"     # oan-helm/oan-apisix-gateway
 
 # ---------------------------------------------------------------------------
 # RKE2 Kubernetes

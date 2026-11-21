@@ -51,10 +51,12 @@ install_istio_if_needed() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# edge: apisix — local-path StorageClass for APISIX's etcd (etcd must not run on
-# NFS) and the APISIX values file
+# edge: apisix — APISIX from oan-helm: its chart from the published repository,
+# its values and etcd manifest from oan-helm's environments/<env> at oan_helm.ref
 # ─────────────────────────────────────────────────────────────────────────────
 LOCAL_PATH_PROVISIONER_URL="https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml"
+OAN_HELM_GIT="https://github.com/Centre-for-Open-Societal-Systems/oan-helm.git"
+OAN_HELM_RAW="https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan-helm"
 
 install_local_path_if_needed() {
     if kubectl get storageclass local-path &>/dev/null; then
@@ -73,14 +75,24 @@ install_local_path_if_needed() {
     wait_for_deployment "local-path-storage" "local-path-provisioner" 300 || return 1
 }
 
-# The staged copy (orchestrator) wins; on-box runs use apisix.values_file as given.
-apisix_values_path() {
-    if [[ -f "${SCRIPT_DIR}/apisix-values.yaml" ]]; then
-        echo "${SCRIPT_DIR}/apisix-values.yaml"
-    else
-        local path=$(cfg 'apisix.values_file' '')
-        [[ -n "$path" && -f "$path" ]] && echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
-    fi
+# The single-member etcd APISIX keeps its configuration in (oan-helm environments/<env>/manifests).
+install_apisix_etcd() {
+    local url="${OAN_HELM_RAW}/$(cfg 'oan_helm.ref')/environments/$(cfg 'oan_helm.environment')/manifests/apisix-etcd.yaml"
+    log_info "Applying APISIX's etcd from ${url}..."
+    kubectl apply -f "$url" || {
+        log_error "APISIX's etcd could not be applied" \
+                  "kubectl apply of ${url} failed" \
+                  "Check oan_helm.ref and oan_helm.environment, and outbound access to raw.githubusercontent.com" \
+                  "kubectl apply -f ${url}"
+        return 1
+    }
+    wait_for_command "APISIX etcd ready" \
+        "kubectl -n api6-gateway rollout status statefulset/apisix-etcd --timeout=5s" 300 10 || return 1
+}
+
+# helmfile reads remote values through go-getter: git::<repo>@<path>?ref=<ref>.
+apisix_values_url() {
+    echo "git::${OAN_HELM_GIT}@environments/$(cfg 'oan_helm.environment')/values/oan-apisix-gateway.yaml?ref=$(cfg 'oan_helm.ref')"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,9 +132,7 @@ edge: "$(cfg 'edge' 'nginx')"
 logging: "$(cfg 'logging' 'local')"
 apisix:
   chartVersion: "$(cfg 'apisix.chart_version' '')"
-  valuesFile: "$(apisix_values_path)"
-  tlsSecretName: "$(cfg 'tls.k8s_secret' '' | cut -d/ -f2)"
-  domain: "$(cfg 'domain')"
+  valuesUrl: "$(apisix_values_url)"
   # Rancher answers only these sources, as the nginx edge's allowlist (WireGuard, VPC, pods).
   privateAllowlist: "$(nginx_private_allowlist | awk '$1 == "allow" { sub(";", "", $2); printf "%s%s", sep, $2; sep = "," }')"
 
@@ -182,13 +192,14 @@ run_phase2() {
     log_success "Kubernetes cluster is healthy."
 
     if [[ "$(cfg 'edge' 'nginx')" == "apisix" ]]; then
-        install_local_path_if_needed || return 1
-        if [[ -z "$(apisix_values_path)" || -z "$(cfg 'apisix.chart_version' '')" ]]; then
-            log_error "edge: apisix needs apisix.values_file and apisix.chart_version" \
-                      "APISIX is installed from oan-helm with the environment's values" \
-                      "Set both in the config (see environments/qa/platform-config.example.yaml)"
+        if [[ -z "$(cfg 'oan_helm.ref')" || -z "$(cfg 'oan_helm.environment')" || -z "$(cfg 'apisix.chart_version')" ]]; then
+            log_error "edge: apisix needs oan_helm.ref, oan_helm.environment and apisix.chart_version" \
+                      "APISIX, its values and its etcd come from oan-helm" \
+                      "Set them in the config (see environments/qa/platform-config.example.yaml)"
             return 1
         fi
+        install_local_path_if_needed || return 1
+        install_apisix_etcd || return 1
     else
         install_istio_if_needed || return 1
     fi
