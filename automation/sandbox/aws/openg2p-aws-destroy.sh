@@ -35,7 +35,7 @@ DRY_RUN=false
 LOG_FILE="${SCRIPT_DIR}/logs/aws-sandbox-destroy-$(date '+%Y%m%d-%H%M%S').log"
 
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/../../production/lib/shared/utils.sh"
+source "${SCRIPT_DIR}/../../lib/utils.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/aws-utils.sh"
 

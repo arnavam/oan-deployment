@@ -156,6 +156,33 @@ tls:
 public_access: false
 
 # ---------------------------------------------------------------------------
+# Edge: what holds ports 80/443
+# ---------------------------------------------------------------------------
+#   nginx  (default) — host Nginx terminates TLS and proxies to the Istio ingress
+#                      gateway (OpenG2P).
+#   apisix           — no host Nginx and no Istio. APISIX (oan-helm chart
+#                      oan-apisix-gateway) binds 80/443 in namespace api6-gateway,
+#                      serves Rancher through its Ingress Controller, and uses one
+#                      wildcard for domain and *.domain, applied as tls.k8s_secret
+#                      (required). Also installs local-path-provisioner for etcd.
+edge: "nginx"
+
+# ---------------------------------------------------------------------------
+# Logs: where Grafana, Loki and OpenTelemetry run
+# ---------------------------------------------------------------------------
+#   local    (default) — this cluster runs them (OpenTelemetry → Loki + MinIO,
+#                        Grafana in rancher-monitoring, dashboards, log alerts).
+#   external           — none of them here; the logs go to a central Loki and
+#                        Grafana (OAN: oan-logging's node agent). Prometheus and
+#                        Alertmanager stay.
+logging: "local"
+
+# Only with edge: apisix.
+# apisix:
+#   chart_version: "0.0.1-develop.1"     # oan-helm/oan-apisix-gateway
+#   values_file: "values/apisix.yaml"    # relative to this config file's directory
+
+# ---------------------------------------------------------------------------
 # RKE2 Kubernetes
 # ---------------------------------------------------------------------------
 # RKE2 version to install (see: https://github.com/rancher/rke2/releases)

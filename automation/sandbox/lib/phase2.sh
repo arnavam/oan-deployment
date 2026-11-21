@@ -2,8 +2,8 @@
 # =============================================================================
 # OpenG2P Deployment Automation — Phase 2: Platform Components (Helmfile)
 # =============================================================================
-# Installs Istio, Rancher, Monitoring, and Logging on the K8s cluster
-# using Helmfile. Sourced by roles/infra/run.sh — do not run directly.
+# Installs Istio (or, with edge: apisix, APISIX), Rancher, Monitoring, and
+# Logging on the K8s cluster using Helmfile. Sourced by roles/infra/run.sh — do not run directly.
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -51,6 +51,39 @@ install_istio_if_needed() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# edge: apisix — local-path StorageClass for APISIX's etcd (etcd must not run on
+# NFS) and the APISIX values file
+# ─────────────────────────────────────────────────────────────────────────────
+LOCAL_PATH_PROVISIONER_URL="https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml"
+
+install_local_path_if_needed() {
+    if kubectl get storageclass local-path &>/dev/null; then
+        log_success "StorageClass local-path already exists."
+        return 0
+    fi
+    log_info "Installing local-path-provisioner (StorageClass local-path, for APISIX's etcd)..."
+    kubectl apply -f "$LOCAL_PATH_PROVISIONER_URL" || {
+        log_error "local-path-provisioner could not be installed" \
+                  "kubectl apply of ${LOCAL_PATH_PROVISIONER_URL} failed" \
+                  "Check outbound access to raw.githubusercontent.com" \
+                  "kubectl apply -f ${LOCAL_PATH_PROVISIONER_URL}"
+        return 1
+    }
+    # nfs-csi stays the default StorageClass; local-path is used only where it is named.
+    wait_for_deployment "local-path-storage" "local-path-provisioner" 300 || return 1
+}
+
+# The staged copy (orchestrator) wins; on-box runs use apisix.values_file as given.
+apisix_values_path() {
+    if [[ -f "${SCRIPT_DIR}/apisix-values.yaml" ]]; then
+        echo "${SCRIPT_DIR}/apisix-values.yaml"
+    else
+        local path=$(cfg 'apisix.values_file' '')
+        [[ -n "$path" && -f "$path" ]] && echo "$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Generate helmfile-infra-values.yaml from config
 # ─────────────────────────────────────────────────────────────────────────────
 generate_helmfile_infra_values() {
@@ -80,6 +113,18 @@ generate_helmfile_infra_values() {
 
 rancher_hostname: "${rancher_host}"
 node_ip: "$(cfg 'node_ip')"
+
+# nginx: host nginx + Istio (OpenG2P). apisix: APISIX holds 80/443 and serves Rancher.
+edge: "$(cfg 'edge' 'nginx')"
+# local: Grafana, Loki and OpenTelemetry here. external: none of them; logs go elsewhere.
+logging: "$(cfg 'logging' 'local')"
+apisix:
+  chartVersion: "$(cfg 'apisix.chart_version' '')"
+  valuesFile: "$(apisix_values_path)"
+  tlsSecretName: "$(cfg 'tls.k8s_secret' '' | cut -d/ -f2)"
+  domain: "$(cfg 'domain')"
+  # Rancher answers only these sources, as the nginx edge's allowlist (WireGuard, VPC, pods).
+  privateAllowlist: "$(nginx_private_allowlist | awk '$1 == "allow" { sub(";", "", $2); printf "%s%s", sep, $2; sep = "," }')"
 
 rancher:
   version: "$(cfg 'rancher.version' '2.15.1')"
@@ -136,7 +181,17 @@ run_phase2() {
     fi
     log_success "Kubernetes cluster is healthy."
 
-    install_istio_if_needed || return 1
+    if [[ "$(cfg 'edge' 'nginx')" == "apisix" ]]; then
+        install_local_path_if_needed || return 1
+        if [[ -z "$(apisix_values_path)" || -z "$(cfg 'apisix.chart_version' '')" ]]; then
+            log_error "edge: apisix needs apisix.values_file and apisix.chart_version" \
+                      "APISIX is installed from oan-helm with the environment's values" \
+                      "Set both in the config (see environments/qa/platform-config.example.yaml)"
+            return 1
+        fi
+    else
+        install_istio_if_needed || return 1
+    fi
     generate_helmfile_infra_values
 
     log_info "Running Helmfile sync for platform components..."

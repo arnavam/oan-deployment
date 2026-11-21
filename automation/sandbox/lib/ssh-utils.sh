@@ -315,6 +315,20 @@ ssh_stage_sandbox() {
         cp "$provision_output" "${stage}/provision-output.yaml"
     fi
 
+    # edge: apisix — the APISIX values file named in the config, relative to the config's directory.
+    local apisix_values
+    apisix_values=$(cfg 'apisix.values_file' '')
+    if [[ -n "$apisix_values" ]]; then
+        [[ "$apisix_values" == /* ]] || apisix_values="$(cd "$(dirname "$sandbox_config")" && pwd)/${apisix_values}"
+        if [[ ! -f "$apisix_values" ]]; then
+            log_error "apisix.values_file not found: ${apisix_values}" \
+                      "The path is relative to the directory of the config file" \
+                      "Fix apisix.values_file in ${sandbox_config}"
+            return 1
+        fi
+        cp "$apisix_values" "${stage}/apisix-values.yaml"
+    fi
+
     if [[ -n "$env_config" && -f "$env_config" ]]; then
         cat "$env_config" > "${stage}/environment-config.yaml"
         # Point env at the staged sandbox config by relative name.

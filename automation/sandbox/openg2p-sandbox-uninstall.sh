@@ -48,7 +48,7 @@ SKIP_SSH=false
 LOG_FILE="${SCRIPT_DIR}/logs/openg2p-sandbox-uninstall-$(date '+%Y%m%d-%H%M%S').log"
 
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/../production/lib/shared/utils.sh"
+source "${SCRIPT_DIR}/../lib/utils.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/ssh-utils.sh"
 

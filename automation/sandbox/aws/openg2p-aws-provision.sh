@@ -46,7 +46,7 @@ LOG_FILE="${SCRIPT_DIR}/logs/aws-sandbox-$(date '+%Y%m%d-%H%M%S').log"
 
 # Shared logging + cfg(); sandbox AWS helpers wrap shared AWS utils.
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/../../production/lib/shared/utils.sh"
+source "${SCRIPT_DIR}/../../lib/utils.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/aws-utils.sh"
 

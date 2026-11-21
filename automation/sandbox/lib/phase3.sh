@@ -6,7 +6,7 @@
 #   - Bootstrap Rancher admin password
 #   - Set the Rancher server URL and cluster display name
 #   - Create custom project RoleTemplates (no-secrets variants)
-#   - Register the OpenG2P Helm repo as a Rancher catalog ClusterRepo
+#   - Register the OAN Helm repo (oan-helm) as a Rancher catalog ClusterRepo
 #
 # Rancher uses local authentication. Administrators create additional users
 # directly in Rancher (☰ → Users & Authentication → Users). There is no
@@ -24,6 +24,18 @@
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Helper: curl to Rancher. With edge: apisix the Rancher name may not resolve to
+# this node yet (tls.publish_a_records: false), so connect to APISIX on node_ip.
+# ─────────────────────────────────────────────────────────────────────────────
+rancher_curl() {
+    if [[ "$(cfg 'edge' 'nginx')" == "apisix" ]]; then
+        curl -sk --resolve "$(get_rancher_hostname):443:$(cfg 'node_ip')" "$@"
+    else
+        curl -sk "$@"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helper: Rancher API call
 # ─────────────────────────────────────────────────────────────────────────────
 rancher_api() {
@@ -33,12 +45,12 @@ rancher_api() {
     local data="${4:-}"
 
     if [[ -n "$data" ]]; then
-        curl -sk -X "$method" "$url" \
+        rancher_curl -X "$method" "$url" \
             -H "Authorization: Bearer ${token}" \
             -H "Content-Type: application/json" \
             -d "$data" 2>/dev/null
     else
-        curl -sk -X "$method" "$url" \
+        rancher_curl -X "$method" "$url" \
             -H "Authorization: Bearer ${token}" \
             -H "Content-Type: application/json" 2>/dev/null
     fi
@@ -51,26 +63,24 @@ rancher_try_login() {
     local url="$1"
     local password="$2"
     local response
-    response=$(curl -sk -X POST "${url}/v3-public/localProviders/local?action=login" \
+    response=$(rancher_curl -X POST "${url}/v3-public/localProviders/local?action=login" \
         -H "Content-Type: application/json" \
         -d "{\"username\":\"admin\",\"password\":\"${password}\"}" 2>/dev/null)
     echo "$response" | jq -r '.token // empty' 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Register the OpenG2P Helm repo as a Rancher CatalogV2 ClusterRepo
+# Register the OAN Helm repo (oan-helm) as a Rancher CatalogV2 ClusterRepo
 # ─────────────────────────────────────────────────────────────────────────────
-# This surfaces the OpenG2P charts in the Rancher UI → Apps → Repositories so
-# administrators can browse/install them from the catalog. The ClusterRepo must
-# point at the Rancher-flavoured index (…/openg2p-helm/rancher), NOT the root
-# chart index — the sub-index carries the catalog.cattle.io/* annotations
-# Rancher needs to display the charts with proper names.
+# This surfaces the OAN charts in the Rancher UI → Apps → Repositories so
+# administrators can browse/install them from the catalog. Same URL the oan_dev
+# cluster registers; oan-helm publishes one index, with no Rancher sub-index.
 #
 # Idempotent: reconciles spec.url whether the repo is new or carries a stale URL.
-OPENG2P_REPO_URL="https://openg2p.github.io/openg2p-helm/rancher"
+OAN_REPO_URL="https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan-helm/main/repository/"
 
-register_openg2p_clusterrepo() {
-    log_info "Registering OpenG2P Helm repo in Rancher's catalog..."
+register_oan_clusterrepo() {
+    log_info "Registering the oan-helm repo in Rancher's catalog..."
 
     # On a freshly-installed cluster phase 3 runs right after Rancher comes up,
     # so the catalog.cattle.io API may not be served yet. Gate on a clean LIST
@@ -87,13 +97,13 @@ register_openg2p_clusterrepo() {
     # Reconcile the URL rather than skip-on-exists: a repo created by an older
     # run may carry a stale URL, and a plain existence check would never fix it.
     local current_url=""
-    if kubectl get clusterrepos.catalog.cattle.io openg2p >/dev/null 2>&1; then
-        current_url=$(kubectl get clusterrepos.catalog.cattle.io openg2p \
+    if kubectl get clusterrepos.catalog.cattle.io oan-helm >/dev/null 2>&1; then
+        current_url=$(kubectl get clusterrepos.catalog.cattle.io oan-helm \
             -o jsonpath='{.spec.url}' 2>/dev/null || true)
     fi
 
-    if [[ "$current_url" == "$OPENG2P_REPO_URL" ]]; then
-        log_success "Rancher ClusterRepo 'openg2p' already points at ${OPENG2P_REPO_URL} — unchanged."
+    if [[ "$current_url" == "$OAN_REPO_URL" ]]; then
+        log_success "Rancher ClusterRepo 'oan-helm' already points at ${OAN_REPO_URL} — unchanged."
         return 0
     fi
 
@@ -101,24 +111,24 @@ register_openg2p_clusterrepo() {
 apiVersion: catalog.cattle.io/v1
 kind: ClusterRepo
 metadata:
-  name: openg2p
+  name: oan-helm
 spec:
-  url: ${OPENG2P_REPO_URL}
+  url: ${OAN_REPO_URL}
 YAML
     then
-        log_warn "Failed to register the OpenG2P ClusterRepo (non-fatal)."
-        log_warn "  You can add it manually in Rancher UI → Apps → Repositories (${OPENG2P_REPO_URL})."
+        log_warn "Failed to register the oan-helm ClusterRepo (non-fatal)."
+        log_warn "  You can add it manually in Rancher UI → Apps → Repositories (${OAN_REPO_URL})."
         return 0
     fi
 
     if [[ -n "$current_url" ]]; then
-        log_success "Rancher ClusterRepo 'openg2p' URL updated: ${current_url} -> ${OPENG2P_REPO_URL}."
+        log_success "Rancher ClusterRepo 'oan-helm' URL updated: ${current_url} -> ${OAN_REPO_URL}."
         # Nudge Rancher's catalog controller to re-download the index now.
-        kubectl annotate clusterrepos.catalog.cattle.io openg2p \
+        kubectl annotate clusterrepos.catalog.cattle.io oan-helm \
             catalog.cattle.io/force-update="$(date -u +%s 2>/dev/null || echo refresh)" \
             --overwrite >/dev/null 2>&1 || true
     else
-        log_success "Rancher ClusterRepo 'openg2p' registered (${OPENG2P_REPO_URL})."
+        log_success "Rancher ClusterRepo 'oan-helm' registered (${OAN_REPO_URL})."
     fi
     log_info "  Rancher UI → Apps → Repositories will reflect it within ~30s."
 }
@@ -271,7 +281,7 @@ run_phase3() {
             if [[ -n "$rancher_token" ]]; then
                 rancher_admin_password="openg2p-$(openssl rand -hex 8)"
                 log_info "Bootstrap login successful. Setting new admin password..."
-                curl -sk -X POST "${rancher_url}/v3/users?action=changepassword" \
+                rancher_curl -X POST "${rancher_url}/v3/users?action=changepassword" \
                     -H "Authorization: Bearer ${rancher_token}" \
                     -H "Content-Type: application/json" \
                     -d "{\"currentPassword\":\"${bootstrap_password}\",\"newPassword\":\"${rancher_admin_password}\"}" \
@@ -297,7 +307,7 @@ run_phase3() {
             if [[ -n "$rancher_token" ]]; then
                 rancher_admin_password="openg2p-$(openssl rand -hex 8)"
                 log_info "Reset successful. Setting new admin password..."
-                curl -sk -X POST "${rancher_url}/v3/users?action=changepassword" \
+                rancher_curl -X POST "${rancher_url}/v3/users?action=changepassword" \
                     -H "Authorization: Bearer ${rancher_token}" \
                     -H "Content-Type: application/json" \
                     -d "{\"currentPassword\":\"${reset_password}\",\"newPassword\":\"${rancher_admin_password}\"}" \
@@ -491,7 +501,7 @@ RTEOF
     fi
 
     # ── Step 3.4: Register the OpenG2P Helm repo in Rancher's catalog ──────
-    register_openg2p_clusterrepo
+    register_oan_clusterrepo
 
     # ── Step 3.5: Show prerelease chart versions (OpenG2P uses 0.0.0-develop)
     set_rancher_prerelease_preference

@@ -10,7 +10,7 @@
 
 _SN_AWS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
-source "${_SN_AWS_LIB_DIR}/../../../production/aws/lib/aws-utils.sh"
+source "${_SN_AWS_LIB_DIR}/../../../lib/aws-utils.sh"
 
 # Distinct ManagedBy so destroy only targets sandbox resources.
 # NOTE: deliberately still "single-node", not "sandbox". This is an AWS TAG

@@ -1,0 +1,65 @@
+# =============================================================================
+# OAN QA platform configuration (qa.oanstaging.com)
+# =============================================================================
+# The single-node platform installed by automation/sandbox. Only the keys that
+# differ from automation/sandbox/sandbox-config.example.yaml are set here; the
+# rest keep the sandbox defaults documented in that file.
+#
+#   cp environments/qa/platform-config.example.yaml environments/qa/platform-config.yaml
+#   ./automation/sandbox/openg2p-sandbox.sh --config environments/qa/platform-config.yaml
+#
+# platform-config.yaml is gitignored: it holds ssh_key and the node addresses.
+# =============================================================================
+
+node_ip: ""                 # [AWS] filled from provision-output.yaml
+node_name: "oan-qa-1"
+cluster_name: "oan-qa"
+
+domain: "qa.oanstaging.com"
+
+tls:
+  email: ""                 # REQUIRED: contact for Let's Encrypt notices
+
+  # Route 53 hosts oanstaging.com. Leave the keys unset and give the instance a
+  # role with route53:ChangeResourceRecordSets on that zone, so renewals are
+  # automatic. Use "manual" only until the role exists (see automation/oan-dev).
+  dns_provider: "route53"
+
+  # APISIX is the edge, as on oan_dev: the wildcard goes to a Secret it serves
+  # (ApisixTls) instead of nginx files. Required with edge: apisix.
+  k8s_secret: "api6-gateway/oan-qa-wildcard-tls"
+  kubeconfig: "/etc/rancher/rke2/rke2.yaml"
+
+  # Public names are managed in Route 53 by hand, not by the automation.
+  publish_a_records: false
+  dns_propagation_seconds: 300
+
+  # Start on staging to prove the path, then false and re-run with --force.
+  staging: true
+
+# The UIs and service hosts are public; each app does its own authentication.
+# Also open 80/443 in the security group.
+public_access: true
+
+# APISIX holds 80/443 (no host nginx, no Istio) and serves Rancher; see
+# automation/sandbox/sandbox-config.example.yaml.
+edge: "apisix"
+apisix:
+  chart_version: "0.0.1-develop.1"
+  values_file: "values/apisix.yaml"
+
+ssh_host: ""                # [AWS] filled from provision-output.yaml
+ssh_user: "ubuntu"
+ssh_key:  ""
+
+# No OpenG2P environment (Commons). The OAN namespaces, shared PostgreSQL and the
+# Jenkins deployer come from automation/oan-platform.sh; the services from Jenkins.
+install_environment: false
+
+rancher:
+  version: "2.15.1"
+  replicas: "1"
+
+# No Grafana, Loki or OpenTelemetry from the platform: oan-logging (environments/qa/platform.yaml) ships the
+# logs to the central Loki and Grafana. Prometheus and Alertmanager stay, for the alert channels below.
+logging: "external"

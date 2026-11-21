@@ -4,3 +4,8 @@ tmpdir
 .project
 .idea
 seed_ml_accounts.log
+
+# OAN environments: live config with addresses and keys
+environments/*/platform-config.yaml
+environments/*/provision-output.yaml
+*.pem

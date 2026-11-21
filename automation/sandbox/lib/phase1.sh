@@ -696,10 +696,26 @@ phase1_step7_certificates() {
     # Publish the infra hostname so it resolves without any local DNS server.
     acme_publish_a_record "rancher" "$node_ip" || return 1
 
-    # Single-name cert; the per-environment wildcard is issued in env phase 1.
-    acme_wait_dns_propagation "$rancher_host"
+    if [[ "$(cfg 'edge' 'nginx')" == "apisix" ]]; then
+        # APISIX edge: one wildcard for the whole domain (Rancher included), applied as the
+        # Secret tls.k8s_secret names. Its namespace must exist before the first issue.
+        local domain=$(cfg "domain")
+        local secret=$(cfg 'tls.k8s_secret')
+        if [[ -z "$secret" ]]; then
+            log_error "edge: apisix needs tls.k8s_secret" \
+                      "APISIX serves the certificate from a Kubernetes Secret, not nginx files" \
+                      "Set tls.k8s_secret to <namespace>/<name>, e.g. api6-gateway/oan-qa-wildcard-tls"
+            return 1
+        fi
+        kubectl create namespace "${secret%%/*}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null || return 1
+        acme_wait_dns_propagation "$domain"
+        acme_issue_cert "$domain" "$domain" "*.${domain}" || return 1
+    else
+        # Single-name cert; the per-environment wildcard is issued in env phase 1.
+        acme_wait_dns_propagation "$rancher_host"
 
-    acme_issue_cert "$rancher_host" "$rancher_host" || return 1
+        acme_issue_cert "$rancher_host" "$rancher_host" || return 1
+    fi
 
     mark_step_done "$step_id"
 }
@@ -833,7 +849,10 @@ run_phase1() {
     phase1_step5_nfs_server
     phase1_step6_nfs_csi
     phase1_step7_certificates   # public A records + Let's Encrypt certificate
-    phase1_step9_nginx          # Nginx reverse proxy using the issued certificate
+    # With edge: apisix, APISIX binds 80/443 (phase 2) and there is no host nginx.
+    if [[ "$(cfg 'edge' 'nginx')" != "apisix" ]]; then
+        phase1_step9_nginx      # Nginx reverse proxy using the issued certificate
+    fi
 
     log_success "Phase 1 complete — all host-level components installed."
 }

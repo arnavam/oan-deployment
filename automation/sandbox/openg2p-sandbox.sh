@@ -67,7 +67,7 @@ LOG_FILE="${SCRIPT_DIR}/logs/openg2p-sandbox-$(date '+%Y%m%d-%H%M%S').log"
 
 # Laptop-safe logging + cfg() from shared utils.
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/../production/lib/shared/utils.sh"
+source "${SCRIPT_DIR}/../lib/utils.sh"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/ssh-utils.sh"
 # DNS/TLS preflight — validated on the laptop BEFORE the node is touched.

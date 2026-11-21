@@ -1,0 +1,11 @@
+# Values for oan-helm/oan-frappe-common on QA: the PostgreSQL the Frappe services share. Release
+# `oan-frappe-common-db`, namespace `frappe-common` (the app values derive frappe.dbHost from that name).
+# Same as oan-helm environments/dev/values/oan-frappe-common.yaml. The chart generates the password into Secret
+# oan-frappe-common-db, which the Jenkins deployer may read (values/oan-cluster-access.yaml).
+
+frappe-common:
+  postgresql-subchart:
+    primary:
+      persistence:
+        # Named, so the volume does not move if the default StorageClass changes.
+        storageClass: nfs-csi

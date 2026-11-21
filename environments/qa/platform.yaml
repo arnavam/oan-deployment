@@ -1,0 +1,41 @@
+# Cluster-level OAN pieces on QA that need a cluster admin, applied once by automation/oan-platform.sh after the
+# platform install. The services themselves are deployed by Jenkins from their own repositories.
+
+repositories:
+  - name: oan-helm
+    url: https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan-helm/main/repository/
+
+helmDefaults:
+  wait: true
+  timeout: 900
+  atomic: true
+
+releases:
+  # Namespaces with Pod Security labels and default-deny ingress NetworkPolicies.
+  - name: namespace-guard
+    namespace: kube-system
+    chart: ./charts/namespace-guard
+
+  # PostgreSQL shared by the Frappe services.
+  - name: oan-frappe-common-db
+    namespace: frappe-common
+    chart: oan-helm/oan-frappe-common
+    version: 0.0.1-develop.1
+    needs: [kube-system/namespace-guard]
+    values: [values/oan-frappe-common.yaml]
+
+  # The ServiceAccount Jenkins deploys with: admin in each service namespace, read on the database Secret.
+  - name: oan-cluster-access
+    namespace: a2c
+    chart: oan-helm/oan-cluster-access
+    version: 0.0.1-develop.1
+    needs: [kube-system/namespace-guard, frappe-common/oan-frappe-common-db]
+    values: [values/oan-cluster-access.yaml]
+
+  # Node log agent, shipping to the central OTel gateway, Loki and Grafana.
+  - name: oan-logging
+    namespace: observability
+    chart: oan-helm/oan-logging
+    version: 0.0.1-develop.1
+    needs: [kube-system/namespace-guard]
+    values: [values/oan-logging.yaml]

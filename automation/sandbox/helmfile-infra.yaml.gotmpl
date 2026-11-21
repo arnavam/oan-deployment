@@ -1,8 +1,9 @@
 # =============================================================================
 # OpenG2P Infra Helmfile — Platform-level Helm releases
 # =============================================================================
-# Installs: Istio, Rancher, Monitoring (Prometheus/Grafana),
-#           Logging (OpenTelemetry + Grafana Loki).
+# Installs: Istio (edge: nginx) or APISIX (edge: apisix), Rancher,
+#           Monitoring (Prometheus/Grafana), Logging (OpenTelemetry + Grafana Loki).
+#           logging: external leaves out Grafana, Loki and OpenTelemetry.
 # Called by roles/infra/run.sh after host-level setup completes.
 # =============================================================================
 
@@ -23,6 +24,8 @@ repositories:
     url: https://grafana.github.io/helm-charts
   - name: open-telemetry
     url: https://open-telemetry.github.io/opentelemetry-helm-charts
+  - name: oan-helm
+    url: https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan-helm/main/repository/
 
 environments:
   default:
@@ -32,6 +35,7 @@ environments:
 ---
 
 releases:
+{{- if ne .Values.edge "apisix" }}
   # ─────────────────────────────────────────────────────────────────────────
   # Istio EnvoyFilter for SPDY upgrade
   # (Istio itself is installed via istioctl in Phase 1 bash)
@@ -61,6 +65,7 @@ releases:
                         "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
                         "upgradeConfigs":
                           - upgradeType: "SPDY/3.1"
+{{- end }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rancher cluster management
@@ -70,10 +75,65 @@ releases:
     chart: rancher-stable/rancher
     version: {{ .Values.rancher.version | quote }}
     values:
+{{- if eq .Values.edge "apisix" }}
+      # APISIX terminates TLS with the wildcard (ApisixTls below) and serves this Ingress.
+      - hostname: {{ .Values.rancher_hostname | quote }}
+        ingress:
+          enabled: true
+          ingressClassName: apisix
+          extraAnnotations:
+            k8s.apisix.apache.org/enable-websocket: "true"
+            k8s.apisix.apache.org/allowlist-source-range: {{ .Values.apisix.privateAllowlist | quote }}
+        tls: external
+        replicas: {{ .Values.rancher.replicas }}
+{{- else }}
       - ingress:
           enabled: false
         tls: external
         replicas: {{ .Values.rancher.replicas }}
+{{- end }}
+
+{{- if eq .Values.edge "apisix" }}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # APISIX: the edge on 80/443 (hostPort), with its Ingress Controller
+  # ─────────────────────────────────────────────────────────────────────────
+  - name: apisix-etcd
+    namespace: api6-gateway
+    chart: ./charts/apisix-etcd
+
+  # Release name `apisix`: the chart's Services and the route charts depend on it.
+  - name: apisix
+    namespace: api6-gateway
+    chart: oan-helm/oan-apisix-gateway
+    version: {{ .Values.apisix.chartVersion | quote }}
+    needs:
+      - api6-gateway/apisix-etcd
+    values:
+      - {{ .Values.apisix.valuesFile | quote }}
+
+  # The wildcard from phase 1 (tls.k8s_secret) for <domain> and *.<domain>.
+  - name: apisix-tls
+    namespace: api6-gateway
+    chart: ./charts/raw
+    needs:
+      - api6-gateway/apisix
+    values:
+      - resources:
+          - apiVersion: apisix.apache.org/v2
+            kind: ApisixTls
+            metadata:
+              name: wildcard
+              namespace: api6-gateway
+            spec:
+              ingressClassName: apisix
+              hosts:
+                - {{ .Values.apisix.domain | quote }}
+                - {{ printf "*.%s" .Values.apisix.domain | quote }}
+              secret:
+                name: {{ .Values.apisix.tlsSecretName | quote }}
+                namespace: api6-gateway
+{{- else }}
 
   - name: rancher-ingress
     namespace: cattle-system
@@ -119,6 +179,7 @@ releases:
                         x-forwarded-proto: https
 
 
+{{- end }}
   # ─────────────────────────────────────────────────────────────────────────
   # Monitoring (Prometheus + Grafana)
   # ─────────────────────────────────────────────────────────────────────────
@@ -148,6 +209,11 @@ releases:
             url: {{ printf "https://%s" .Values.rancher_hostname | quote }}
             psp:
               enabled: false
+{{- if eq .Values.logging "external" }}
+        # logging: external — no Grafana here; logs and dashboards are on the central Grafana.
+        grafana:
+          enabled: false
+{{- else }}
         # Register Loki as a Grafana datasource so the existing Grafana becomes
         # the single pane of glass for both metrics (Prometheus) and logs (Loki).
         # The URL resolves at query time, so Loki may be installed afterwards.
@@ -193,6 +259,7 @@ releases:
               org_role: Editor
             users:
               auto_assign_org_role: Editor
+{{- end }}
         # Alertmanager routing + notification channels. Both Loki (log) alerts
         # and Prometheus (infra) alerts funnel through this one Alertmanager.
         # Channels are gated on config: each block renders ONLY when its
@@ -246,6 +313,11 @@ releases:
 
   # Grafana and Prometheus are reachable through the Rancher UI (Cluster
   # Explorer → Monitoring), so they are NOT exposed on their own hostnames.
+
+{{- if ne .Values.logging "external" }}
+
+  # Everything from here to the end (dashboards, Loki, OpenTelemetry, the AI hook that reads Loki)
+  # is left out with logging: external.
 
   # --- Grafana dashboards (OpenG2P — Logs & Health, etc.) --------------------
   # Provisions dashboards as ConfigMaps in cattle-dashboards (where the
@@ -734,3 +806,4 @@ releases:
             stringData:
               api-key: {{ .Values.ai.openrouterApiKey | quote }}
               model: {{ .Values.ai.model | quote }}
+{{- end }}
