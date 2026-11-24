@@ -326,6 +326,33 @@ phase1_step3_rke2() {
         fi
     fi
 
+    # containerd cannot call ECR with the instance role; the kubelet does it through this credential provider.
+    local ecr_provider_version=$(cfg "ecr_credential_provider_version" "v1.31.0")
+    local ecr_provider_dir=/var/lib/rancher/credentialprovider
+    local ecr_provider_url="https://artifacts.k8s.io/binaries/cloud-provider-aws/${ecr_provider_version}/linux/amd64/ecr-credential-provider-linux-amd64"
+    log_info "Installing ECR credential provider ${ecr_provider_version}..."
+    mkdir -p "${ecr_provider_dir}/bin"
+    if ! curl -sfL "${ecr_provider_url}" -o "${ecr_provider_dir}/bin/ecr-credential-provider" ||
+       ! echo "$(curl -sfL "${ecr_provider_url}.sha256")  ${ecr_provider_dir}/bin/ecr-credential-provider" | sha256sum -c --quiet -; then
+        log_error "ECR credential provider download/verification failed" \
+                  "Could not fetch or verify ${ecr_provider_url}" \
+                  "Check network access to artifacts.k8s.io, or set ecr_credential_provider_version" \
+                  "https://kubernetes.io/docs/tasks/administer-cluster/kubelet-credential-provider/"
+        return 1
+    fi
+    chmod 0755 "${ecr_provider_dir}/bin/ecr-credential-provider"
+    cat > "${ecr_provider_dir}/config.yaml" <<EOF
+apiVersion: kubelet.config.k8s.io/v1
+kind: CredentialProviderConfig
+providers:
+  - name: ecr-credential-provider
+    matchImages:
+      - "*.dkr.ecr.*.amazonaws.com"
+    defaultCacheDuration: "12h"
+    apiVersion: credentialprovider.kubelet.k8s.io/v1
+    args: ["get-credentials"]
+EOF
+
     log_info "Creating RKE2 configuration..."
     mkdir -p /etc/rancher/rke2
     cat > /etc/rancher/rke2/config.yaml <<EOF
@@ -340,6 +367,8 @@ kubelet-arg:
   - --allowed-unsafe-sysctls=net.ipv4.conf.all.src_valid_mark,net.ipv4.ip_forward
   - --container-log-max-size=50Mi
   - --container-log-max-files=5
+  - --image-credential-provider-config=${ecr_provider_dir}/config.yaml
+  - --image-credential-provider-bin-dir=${ecr_provider_dir}/bin
 EOF
 
     log_info "Downloading and installing RKE2 ${rke2_version}..."
